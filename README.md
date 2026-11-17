@@ -58,6 +58,25 @@ The API does not provide authentication. Keep the default loopback binding;
 do not expose it directly to the internet without adding authentication and an
 appropriately secured reverse proxy.
 
+## Optional local Kafka demo
+
+Kafka streaming is opt-in and runs only on your computer. With Docker Desktop
+running, start the API, a local Kafka broker, and the prediction worker:
+
+```powershell
+docker compose -f compose.yaml -f compose.kafka.yaml up --build
+```
+
+Open <http://127.0.0.1:8000/> and choose **Send through Kafka**. The API queues
+the event, the worker consumes it and saves the prediction, and the dashboard
+shows the result. Stop the services with `Ctrl+C` or
+`docker compose -f compose.yaml -f compose.kafka.yaml down`.
+
+This mode uses no hosted broker or cloud Kafka account, so it has no Kafka
+hosting or usage charge. It requires Docker Desktop and runs only while your
+computer and Docker are on. The public Render demo remains REST-only and does
+not depend on Kafka.
+
 ## Free public demo
 
 `render.yaml` defines a public free-tier Render demo. The free instance may sleep
@@ -75,7 +94,7 @@ available at `/docs`.
 ## Project layout
 
 - `app/`: API, configuration, database models/repository, schemas, inference,
-  and model training/evaluation code
+  optional Kafka producer/worker, and model training/evaluation code
 - `artifacts/`: model weights, scaler, baseline model, metadata, and evaluation
   report required by inference
 - `data/`: local synthetic input data and SQLite database

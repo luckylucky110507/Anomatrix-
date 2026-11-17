@@ -8,10 +8,13 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.config import settings
 from app.db.base import Base
 from app.db.models import AnomalyResult, TelemetryEvent
+from app.kafka.worker import process_telemetry_message
 from app.main import create_app, get_db
 from app.schemas.prediction import PredictionResponse
+from app.schemas.telemetry import TelemetryRequest
 
 
 class FakeInferenceService:
@@ -114,6 +117,41 @@ def test_single_prediction(client):
     assert body["threshold"] == 0.05
     assert body["model_version"] == "test-v1"
     assert "timestamp" in body
+    with client.app.state.test_session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(TelemetryEvent)) == 1
+        assert session.scalar(select(func.count()).select_from(AnomalyResult)) == 1
+
+
+def test_kafka_streaming_is_disabled_by_default(client, monkeypatch):
+    monkeypatch.setattr(settings, "kafka_enabled", False)
+    assert client.get("/kafka/status").json() == {"enabled": False}
+    response = client.post("/predict/stream", json=valid_telemetry())
+    assert response.status_code == 503
+
+
+def test_kafka_stream_status_tracks_prediction(client, monkeypatch):
+    monkeypatch.setattr(settings, "kafka_enabled", True)
+    monkeypatch.setattr("app.main.publish_telemetry_event", lambda _event: None)
+
+    submitted = client.post("/predict/stream", json=valid_telemetry())
+    assert submitted.status_code == 202
+    event_id = submitted.json()["event_id"]
+    assert client.get(f"/predict/stream/{event_id}").json()["status"] == "queued"
+
+    assert client.post("/predict", json=valid_telemetry()).status_code == 200
+    completed = client.get(f"/predict/stream/{event_id}").json()
+    assert completed["status"] == "completed"
+    assert completed["prediction"]["event_id"] == event_id
+
+
+def test_kafka_worker_processes_and_persists_message(client):
+    event = TelemetryRequest.model_validate(valid_telemetry())
+    event_id = process_telemetry_message(
+        event.model_dump_json().encode(),
+        client.app.state.inference_service,
+        client.app.state.test_session_factory,
+    )
+    assert event_id == event.event_id
     with client.app.state.test_session_factory() as session:
         assert session.scalar(select(func.count()).select_from(TelemetryEvent)) == 1
         assert session.scalar(select(func.count()).select_from(AnomalyResult)) == 1

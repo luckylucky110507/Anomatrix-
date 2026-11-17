@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Iterator
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -13,11 +14,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.repository import save_predictions
+from app.db.repository import get_prediction_by_event_id, save_predictions
 from app.db.session import DatabaseConfigurationError, get_session_factory
+from app.kafka.producer import KafkaPublishError, publish_telemetry_event
 from app.ml.preprocessing import FEATURE_COLUMNS
 from app.schemas.prediction import (
     BatchPredictionResponse,
+    KafkaStreamStatusResponse,
+    KafkaSubmissionResponse,
     ModelInfoResponse,
     PredictionResponse,
 )
@@ -120,6 +124,64 @@ def create_app(inference_service: InferenceService | None = None) -> FastAPI:
             baseline_type="scikit-learn Isolation Forest",
             features=FEATURE_COLUMNS,
             threshold=service.threshold,
+        )
+
+    @application.get("/kafka/status")
+    def kafka_status() -> dict[str, bool]:
+        return {"enabled": settings.kafka_enabled}
+
+    @application.post(
+        "/predict/stream",
+        response_model=KafkaSubmissionResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def predict_stream(payload: TelemetryRequest) -> KafkaSubmissionResponse:
+        if not settings.kafka_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Kafka streaming is disabled for this deployment.",
+            )
+
+        event = payload
+        if event.event_id is None:
+            event = event.model_copy(update={"event_id": str(uuid4())})
+        try:
+            publish_telemetry_event(event)
+        except KafkaPublishError as exc:
+            logger.exception("Could not publish telemetry to Kafka.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Kafka is unavailable. Check the local Kafka demo setup.",
+            ) from exc
+        return KafkaSubmissionResponse(event_id=event.event_id, status="queued")
+
+    @application.get(
+        "/predict/stream/{event_id}",
+        response_model=KafkaStreamStatusResponse,
+    )
+    def stream_prediction_status(
+        event_id: str,
+        session: Session = Depends(get_db),
+    ) -> KafkaStreamStatusResponse:
+        if not settings.kafka_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Kafka streaming is disabled for this deployment.",
+            )
+        try:
+            prediction = get_prediction_by_event_id(session, event_id)
+        except SQLAlchemyError as exc:
+            logger.exception("Could not read Kafka prediction status.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Prediction status is unavailable because the database is unavailable.",
+            ) from exc
+        if prediction is None:
+            return KafkaStreamStatusResponse(event_id=event_id, status="queued")
+        return KafkaStreamStatusResponse(
+            event_id=event_id,
+            status="completed",
+            prediction=prediction,
         )
 
     @application.post("/predict", response_model=PredictionResponse)

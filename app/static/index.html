@@ -107,6 +107,9 @@
     .button-primary:hover:not(:disabled) { background: #3568d8; }
     .button-secondary { border: 1px solid var(--line); color: #59677b; background: #fff; }
     .button-secondary:hover { background: #f7f9fc; }
+    .button-kafka { border: 1px solid #d5e0f7; color: #3d5f9e; background: #f3f6fc; }
+    .button-kafka:hover:not(:disabled) { background: #e9effb; }
+    button[hidden] { display: none; }
 
     .empty-state { min-height: 276px; display: grid; place-items: center; padding: 25px; text-align: center; }
     .empty-icon { display: grid; width: 48px; height: 48px; margin: 0 auto 13px; place-items: center; border-radius: 14px; color: #5979c3; background: #eff3fc; font-size: 22px; }
@@ -218,6 +221,7 @@
             <div class="form-actions">
               <button class="button button-primary" id="analyze-button" type="submit">Analyze event <span aria-hidden="true">→</span></button>
               <button class="button button-secondary" id="sample-button" type="button">Load sample</button>
+              <button class="button button-kafka" id="kafka-button" type="button" hidden>Send through Kafka</button>
             </div>
             <div class="error-message" id="error-message" role="alert"></div>
           </form>
@@ -271,23 +275,29 @@
     const statusText = document.getElementById("service-status-text");
     const serviceMetric = document.getElementById("service-metric");
     const errorBox = document.getElementById("error-message");
+    const analyzeButton = document.getElementById("analyze-button");
+    const kafkaButton = document.getElementById("kafka-button");
 
     async function loadModelInfo() {
       try {
-        const [readyResponse, infoResponse] = await Promise.all([
+        const [readyResponse, infoResponse, kafkaResponse] = await Promise.all([
           fetch("/ready"),
-          fetch("/model/info")
+          fetch("/model/info"),
+          fetch("/kafka/status")
         ]);
-        if (!readyResponse.ok || !infoResponse.ok) {
+        if (!readyResponse.ok || !infoResponse.ok || !kafkaResponse.ok) {
           throw new Error("The API or model is not ready yet.");
         }
         const info = await infoResponse.json();
+        const kafka = await kafkaResponse.json();
         statusPill.classList.add("online");
         statusText.textContent = "All systems operational";
         serviceMetric.textContent = "Ready";
         document.getElementById("version-metric").textContent = info.model_version;
         document.getElementById("threshold-metric").textContent = Number(info.threshold).toFixed(6);
+        kafkaButton.hidden = !kafka.enabled;
       } catch {
+        kafkaButton.hidden = true;
         statusText.textContent = "Service unavailable";
         serviceMetric.textContent = "Unavailable";
       }
@@ -302,14 +312,8 @@
       errorBox.classList.remove("visible");
     });
 
-    document.getElementById("prediction-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const button = document.getElementById("analyze-button");
-      button.disabled = true;
-      button.textContent = "Analyzing…";
-      errorBox.classList.remove("visible");
-
-      const payload = {
+    function currentPayload() {
+      return {
         event_id: `dashboard-${Date.now()}`,
         cpu: Number(document.getElementById("cpu").value),
         memory: Number(document.getElementById("memory").value),
@@ -317,29 +321,64 @@
         network_traffic: Number(document.getElementById("network_traffic").value),
         error_rate: Number(document.getElementById("error_rate").value)
       };
+    }
+
+    async function readResponse(response) {
+      const body = await response.json();
+      if (!response.ok) {
+        const validation = Array.isArray(body.detail)
+          ? body.detail.map((item) => item.msg).join(" ")
+          : body.detail;
+        throw new Error(validation || "Prediction failed. Try again.");
+      }
+      return body;
+    }
+
+    async function pollKafkaPrediction(eventId) {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const response = await fetch(`/predict/stream/${encodeURIComponent(eventId)}`);
+        const status = await readResponse(response);
+        if (status.status === "completed") {
+          return status.prediction;
+        }
+      }
+      throw new Error("Kafka queued the event, but the worker has not completed it yet.");
+    }
+
+    async function submitPrediction(useKafka) {
+      const buttons = [analyzeButton, kafkaButton];
+      buttons.forEach((button) => { button.disabled = true; });
+      analyzeButton.textContent = "Analyzing…";
+      if (!kafkaButton.hidden) {
+        kafkaButton.textContent = "Sending through Kafka…";
+      }
+      errorBox.classList.remove("visible");
 
       try {
-        const response = await fetch("/predict", {
+        const response = await fetch(useKafka ? "/predict/stream" : "/predict", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(currentPayload())
         });
-        const body = await response.json();
-        if (!response.ok) {
-          const validation = Array.isArray(body.detail)
-            ? body.detail.map((item) => item.msg).join(" ")
-            : body.detail;
-          throw new Error(validation || "Prediction failed. Try again.");
-        }
-        showResult(body);
+        const body = await readResponse(response);
+        showResult(useKafka ? await pollKafkaPrediction(body.event_id) : body);
       } catch (error) {
         errorBox.textContent = error.message || "Could not reach the API. Please try again.";
         errorBox.classList.add("visible");
       } finally {
-        button.disabled = false;
-        button.innerHTML = 'Analyze event <span aria-hidden="true">→</span>';
+        buttons.forEach((button) => { button.disabled = false; });
+        analyzeButton.innerHTML = 'Analyze event <span aria-hidden="true">→</span>';
+        kafkaButton.textContent = "Send through Kafka";
       }
+    }
+
+    document.getElementById("prediction-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitPrediction(false);
     });
+
+    kafkaButton.addEventListener("click", () => submitPrediction(true));
 
     function showResult(result) {
       const isAnomaly = result.is_anomaly;

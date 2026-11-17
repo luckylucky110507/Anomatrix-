@@ -72,6 +72,13 @@ def _existing_prediction(
     )
 
 
+def get_prediction_by_event_id(
+    session: Session,
+    event_id: str,
+) -> PredictionResponse | None:
+    return _existing_prediction(session, event_id)
+
+
 def save_predictions(
     session: Session,
     events: list[TelemetryRequest],

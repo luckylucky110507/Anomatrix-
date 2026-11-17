@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     database_url: str | None = None
     log_level: str = "INFO"
+    kafka_enabled: bool = False
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_topic: str = "telemetry-events"
     kafka_consumer_group: str = "anomatrix-consumers"

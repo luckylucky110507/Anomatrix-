@@ -27,6 +27,17 @@ class BatchPredictionResponse(APIResponse):
     predictions: list[PredictionResponse]
 
 
+class KafkaSubmissionResponse(APIResponse):
+    event_id: str
+    status: Literal["queued"]
+
+
+class KafkaStreamStatusResponse(APIResponse):
+    event_id: str
+    status: Literal["queued", "completed"]
+    prediction: PredictionResponse | None = None
+
+
 class ModelInfoResponse(APIResponse):
     model_version: str
     model_type: str

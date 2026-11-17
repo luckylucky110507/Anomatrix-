@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    environment:
+      DATABASE_URL: sqlite:////data/anomatrix.db
+      ENVIRONMENT: production
+      DEBUG: "false"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - anomatrix-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  anomatrix-data:

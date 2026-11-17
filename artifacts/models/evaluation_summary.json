@@ -1,0 +1,39 @@
+{
+  "threshold": 0.04443783313035965,
+  "autoencoder": {
+    "precision": 0.8947368421052632,
+    "recall": 0.918918918918919,
+    "f1_score": 0.9066666666666666,
+    "confusion_matrix": {
+      "tn": 709,
+      "fp": 4,
+      "fn": 3,
+      "tp": 34
+    },
+    "support": {
+      "normal": 713,
+      "anomalous": 37
+    },
+    "roc_auc": 0.994768962510898
+  },
+  "isolation_forest": {
+    "precision": 0.5967741935483871,
+    "recall": 1.0,
+    "f1_score": 0.7474747474747475,
+    "confusion_matrix": {
+      "tn": 688,
+      "fp": 25,
+      "fn": 0,
+      "tp": 37
+    },
+    "support": {
+      "normal": 713,
+      "anomalous": 37
+    },
+    "roc_auc": 1.0
+  },
+  "normal_train_samples": 3325,
+  "normal_val_samples": 712,
+  "val_slice_samples": 750,
+  "test_samples": 750
+}

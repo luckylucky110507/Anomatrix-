@@ -109,6 +109,24 @@
     .button-secondary:hover { background: #f7f9fc; }
     .button-kafka { border: 1px solid #d5e0f7; color: #3d5f9e; background: #f3f6fc; }
     .button-kafka:hover:not(:disabled) { background: #e9effb; }
+    .stream-panel { margin-bottom: 20px; }
+    .stream-heading { align-items: center; margin-bottom: 16px; }
+    .stream-controls { display: flex; align-items: center; gap: 12px; }
+    .stream-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .stream-state::before { width: 8px; height: 8px; border-radius: 50%; background: #a4afbf; content: ""; }
+    .stream-state.active { color: #187c68; }
+    .stream-state.active::before { background: var(--teal); box-shadow: 0 0 0 3px #d9f3ec; }
+    .stream-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stream-stat { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; }
+    .stream-stat-label { color: var(--muted); font-size: 10px; }
+    .stream-stat-value { margin-top: 5px; overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .stream-feed { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+    .stream-feed-item { min-width: 0; padding: 9px 11px; border: 1px solid #d6efe8; border-radius: 9px; background: #f5fbf9; }
+    .stream-feed-item.anomaly { border-color: #f2d8d9; background: #fff7f6; }
+    .stream-feed-main { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 700; }
+    .stream-feed-item.anomaly .stream-feed-main { color: #a93e48; }
+    .stream-feed-id { overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .stream-error { margin-top: 10px; }
     button[hidden] { display: none; }
 
     .empty-state { min-height: 276px; display: grid; place-items: center; padding: 25px; text-align: center; }
@@ -146,6 +164,7 @@
       .metric { min-height: 93px; padding: 14px; }
       .metric-value { font-size: 16px; }
       .workspace { grid-template-columns: 1fr; }
+      .stream-feed { grid-template-columns: repeat(2, 1fr); }
       .empty-state { min-height: 190px; }
     }
     @media (max-width: 430px) {
@@ -159,6 +178,11 @@
       .form-grid { gap: 13px 10px; }
       .form-actions { flex-direction: column; }
       .button-secondary { min-height: 38px; }
+      .stream-heading { align-items: flex-start; flex-direction: column; }
+      .stream-controls { width: 100%; justify-content: space-between; }
+      .stream-stats { gap: 7px; }
+      .stream-stat { padding: 10px; }
+      .stream-feed { grid-template-columns: 1fr; }
       footer { flex-direction: column; }
     }
   </style>
@@ -199,6 +223,35 @@
           <div class="metric-label">Autoencoder threshold</div>
           <div class="metric-value small" id="threshold-metric">—</div>
         </article>
+      </section>
+
+      <section class="panel stream-panel" id="stream-panel" aria-labelledby="stream-title" hidden>
+        <div class="panel-heading stream-heading">
+          <div>
+            <h2 id="stream-title">Continuous synthetic stream</h2>
+            <p class="panel-description">Generate telemetry every 1.5 seconds and score each event through Kafka. Demo data only.</p>
+          </div>
+          <div class="stream-controls">
+            <span class="stream-state" id="stream-state" role="status">Stopped</span>
+            <button class="button button-kafka" id="stream-toggle" type="button">Start live stream</button>
+          </div>
+        </div>
+        <div class="stream-stats" aria-label="Live stream metrics">
+          <div class="stream-stat">
+            <div class="stream-stat-label">Events processed</div>
+            <div class="stream-stat-value" id="stream-event-count">0</div>
+          </div>
+          <div class="stream-stat">
+            <div class="stream-stat-label">Anomalies detected</div>
+            <div class="stream-stat-value" id="stream-anomaly-count">0</div>
+          </div>
+          <div class="stream-stat">
+            <div class="stream-stat-label">Latest event</div>
+            <div class="stream-stat-value" id="stream-latest-event">Waiting for stream</div>
+          </div>
+        </div>
+        <ol class="stream-feed" id="stream-feed" aria-live="polite"></ol>
+        <div class="error-message stream-error" id="stream-error" role="alert"></div>
       </section>
 
       <section class="workspace">
@@ -277,6 +330,15 @@
     const errorBox = document.getElementById("error-message");
     const analyzeButton = document.getElementById("analyze-button");
     const kafkaButton = document.getElementById("kafka-button");
+    const streamPanel = document.getElementById("stream-panel");
+    const streamToggle = document.getElementById("stream-toggle");
+    const streamState = document.getElementById("stream-state");
+    const streamError = document.getElementById("stream-error");
+    const telemetryInputs = ["cpu", "memory", "latency", "network_traffic", "error_rate"]
+      .map((id) => document.getElementById(id));
+    let streamActive = false;
+    let streamEventCount = 0;
+    let streamAnomalyCount = 0;
 
     async function loadModelInfo() {
       try {
@@ -296,8 +358,10 @@
         document.getElementById("version-metric").textContent = info.model_version;
         document.getElementById("threshold-metric").textContent = Number(info.threshold).toFixed(6);
         kafkaButton.hidden = !kafka.enabled;
+        streamPanel.hidden = !kafka.enabled;
       } catch {
         kafkaButton.hidden = true;
+        streamPanel.hidden = true;
         statusText.textContent = "Service unavailable";
         serviceMetric.textContent = "Unavailable";
       }
@@ -346,6 +410,16 @@
       throw new Error("Kafka queued the event, but the worker has not completed it yet.");
     }
 
+    async function requestPrediction(payload, useKafka) {
+      const response = await fetch(useKafka ? "/predict/stream" : "/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const body = await readResponse(response);
+      return useKafka ? pollKafkaPrediction(body.event_id) : body;
+    }
+
     async function submitPrediction(useKafka) {
       const buttons = [analyzeButton, kafkaButton];
       buttons.forEach((button) => { button.disabled = true; });
@@ -356,13 +430,8 @@
       errorBox.classList.remove("visible");
 
       try {
-        const response = await fetch(useKafka ? "/predict/stream" : "/predict", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(currentPayload())
-        });
-        const body = await readResponse(response);
-        showResult(useKafka ? await pollKafkaPrediction(body.event_id) : body);
+        const result = await requestPrediction(currentPayload(), useKafka);
+        showResult(result);
       } catch (error) {
         errorBox.textContent = error.message || "Could not reach the API. Please try again.";
         errorBox.classList.add("visible");
@@ -372,6 +441,105 @@
         kafkaButton.textContent = "Send through Kafka";
       }
     }
+
+    function syntheticPayload(sequence) {
+      const isAnomalySample = sequence % 4 === 0;
+      const jitter = (min, max) => min + Math.random() * (max - min);
+      return {
+        event_id: `live-${Date.now()}-${sequence}`,
+        timestamp: new Date().toISOString(),
+        cpu: Number(jitter(isAnomalySample ? 88 : 38, isAnomalySample ? 99 : 58).toFixed(2)),
+        memory: Number(jitter(isAnomalySample ? 90 : 50, isAnomalySample ? 99 : 72).toFixed(2)),
+        latency: Number(jitter(isAnomalySample ? 450 : 85, isAnomalySample ? 650 : 165).toFixed(2)),
+        network_traffic: Number(jitter(isAnomalySample ? 1100 : 180, isAnomalySample ? 1600 : 480).toFixed(2)),
+        error_rate: Number(jitter(isAnomalySample ? 6 : 0.1, isAnomalySample ? 12 : 1.2).toFixed(2))
+      };
+    }
+
+    function updateTelemetryInputs(payload) {
+      telemetryInputs.forEach((input) => {
+        input.value = String(payload[input.name]);
+      });
+    }
+
+    function appendStreamEvent(result) {
+      const item = document.createElement("li");
+      item.className = `stream-feed-item${result.is_anomaly ? " anomaly" : ""}`;
+
+      const summary = document.createElement("div");
+      summary.className = "stream-feed-main";
+      const decision = document.createElement("span");
+      decision.textContent = result.is_anomaly ? "Anomaly detected" : "Normal";
+      const score = document.createElement("span");
+      score.textContent = Number(result.anomaly_score).toFixed(4);
+      summary.append(decision, score);
+
+      const eventId = document.createElement("div");
+      eventId.className = "stream-feed-id";
+      eventId.textContent = `${new Date(result.timestamp).toLocaleTimeString()} · ${result.event_id}`;
+      item.append(summary, eventId);
+
+      const feed = document.getElementById("stream-feed");
+      feed.prepend(item);
+      while (feed.children.length > 6) {
+        feed.lastElementChild.remove();
+      }
+
+      streamEventCount += 1;
+      if (result.is_anomaly) {
+        streamAnomalyCount += 1;
+      }
+      document.getElementById("stream-event-count").textContent = String(streamEventCount);
+      document.getElementById("stream-anomaly-count").textContent = String(streamAnomalyCount);
+      document.getElementById("stream-latest-event").textContent =
+        result.is_anomaly ? "Anomaly detected" : "Normal";
+    }
+
+    function setStreamActive(active) {
+      streamActive = active;
+      streamToggle.textContent = active ? "Stop live stream" : "Start live stream";
+      streamToggle.setAttribute("aria-pressed", String(active));
+      streamState.textContent = active ? "Live · every 1.5s" : "Stopped";
+      streamState.classList.toggle("active", active);
+      analyzeButton.disabled = active;
+      kafkaButton.disabled = active;
+      telemetryInputs.forEach((input) => { input.disabled = active; });
+    }
+
+    async function runLiveStream() {
+      streamError.classList.remove("visible");
+      while (streamActive) {
+        const payload = syntheticPayload(streamEventCount + 1);
+        updateTelemetryInputs(payload);
+        try {
+          const result = await requestPrediction(payload, true);
+          showResult(result);
+          appendStreamEvent(result);
+        } catch (error) {
+          streamError.textContent = error.message || "Live stream failed. Check the API and Kafka worker.";
+          streamError.classList.add("visible");
+          setStreamActive(false);
+          return;
+        }
+        if (streamActive) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
+    }
+
+    streamToggle.addEventListener("click", () => {
+      if (streamActive) {
+        setStreamActive(false);
+        return;
+      }
+      if (kafkaButton.hidden) {
+        streamError.textContent = "Kafka streaming is disabled for this deployment.";
+        streamError.classList.add("visible");
+        return;
+      }
+      setStreamActive(true);
+      runLiveStream();
+    });
 
     document.getElementById("prediction-form").addEventListener("submit", (event) => {
       event.preventDefault();

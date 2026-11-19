@@ -72,6 +72,12 @@ the event, the worker consumes it and saves the prediction, and the dashboard
 shows the result. Stop the services with `Ctrl+C` or
 `docker compose -f compose.yaml -f compose.kafka.yaml down`.
 
+For a continuous synthetic demo, choose **Start live stream** on the dashboard.
+It sends a new telemetry event through Kafka every 1.5 seconds, updates the
+prediction and event counters, and includes periodic high-signal samples to
+demonstrate anomaly detection. Choose **Stop live stream** to stop publishing.
+This is generated demo data, not a live sensor feed.
+
 This mode uses no hosted broker or cloud Kafka account, so it has no Kafka
 hosting or usage charge. It requires Docker Desktop and runs only while your
 computer and Docker are on. The public Render demo remains REST-only and does
